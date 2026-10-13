@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import html2canvas from 'html2canvas'
 import {
   Heart,
@@ -9,6 +9,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import './App.css'
+import { reportAssumptionsWhenIdle, reportPngExport, valuesFromUrl, tabFromUrl } from './hubEvents'
 
 // Components
 import ControlPanel from './components/ControlPanel'
@@ -84,21 +85,33 @@ const TABS = [
   { id: 'network', label: 'Network Effects', icon: Users, number: 3 },
 ]
 
+// A scenario link (from the class hub's activity log) reopens saved assumptions.
+const initialValues = valuesFromUrl(DEFAULT_VALUES) ?? DEFAULT_VALUES
+const matchingPreset = (vals) =>
+  Object.keys(PRESETS).find(key =>
+    Object.keys(DEFAULT_VALUES).every(k => PRESETS[key].values[k] === vals[k])
+  ) ?? null
+
 function App() {
-  const [values, setValues] = useState(DEFAULT_VALUES)
-  const [activePreset, setActivePreset] = useState('base')
-  const [activeTab, setActiveTab] = useState('churn')
+  const [values, setValues] = useState(initialValues)
+  const [activePreset, setActivePreset] = useState(() => matchingPreset(initialValues))
+  const [lastPreset, setLastPreset] = useState(null) // most recent preset the student chose
+  const [touched, setTouched] = useState(false) // report only once the student has changed something
+  const [activeTab, setActiveTab] = useState(() => tabFromUrl(TABS.map(t => t.id)) ?? 'churn')
   const [showInstructions, setShowInstructions] = useState(true)
   const dashboardRef = useRef(null)
 
   const updateValue = useCallback((key, value) => {
     setValues(prev => ({ ...prev, [key]: value }))
     setActivePreset(null) // Clear preset when manually adjusting
+    setTouched(true)
   }, [])
 
   const applyPreset = useCallback((presetKey) => {
     setValues(PRESETS[presetKey].values)
     setActivePreset(presetKey)
+    setLastPreset(presetKey)
+    setTouched(true)
   }, [])
 
   // Calculate CLV values
@@ -167,6 +180,12 @@ function App() {
 
   const clvData = calculateCLV()
   const marketData = calculateMarketProjections()
+  const hubState = { values, clvData, marketData, activePreset, lastPreset, presets: PRESETS }
+
+  // Report the latest assumptions and results to the class hub once the student pauses.
+  useEffect(() => {
+    if (touched) reportAssumptionsWhenIdle(hubState)
+  }, [values, activePreset, lastPreset, touched]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Export screenshot
   const handleExport = async () => {
@@ -180,6 +199,11 @@ function App() {
         link.download = `tinder-hinge-analysis-${activeTab}-${new Date().toISOString().split('T')[0]}.png`
         link.href = canvas.toDataURL()
         link.click()
+        reportPngExport(hubState, {
+          tab: activeTab,
+          tabLabel: TABS.find(t => t.id === activeTab).label,
+          fileName: link.download,
+        })
       } catch (error) {
         console.error('Export failed:', error)
       }
